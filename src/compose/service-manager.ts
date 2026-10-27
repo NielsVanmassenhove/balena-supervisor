@@ -658,9 +658,15 @@ async function prepareForHandover(service: Service) {
 	}
 	const container = docker.getContainer(svc.containerId);
 	await container.update({ RestartPolicy: {} });
-	return await container.rename({
-		name: `old_${service.serviceName}_${service.imageId}_${service.releaseId}_${service.commit}`,
-	});
+
+	// A handover that failed after this point is retried against a container
+	// that already carries the old name, and the Engine refuses to rename a
+	// container to its current name
+	const name = `old_${service.serviceName}_${service.imageId}_${service.releaseId}_${service.commit}`;
+	const { Name } = await container.inspect();
+	if (Name.replace(/^\//, '') !== name) {
+		await container.rename({ name });
+	}
 }
 
 export async function waitToKill(service: Service, timeout: number | string) {
