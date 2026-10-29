@@ -124,14 +124,21 @@ describe('compose/service-manager', () => {
 	});
 
 	describe('preparing a handover', () => {
+		const toDockerContainer = (service: Service) =>
+			service.toDockerContainer({ deviceName: 'foo', containerIds: {} });
+
+		// The name the supervisor creates the service's container with
+		const containerName = (service: Service) =>
+			toDockerContainer(service).name!;
+
+		// The name the handover gives the old container
+		const oldName = (service: Service) => `old_${containerName(service)}`;
+
 		// The container the supervisor would have created for the service, under
 		// the given name
-		const createServiceContainer = (
-			service: Awaited<ReturnType<typeof createService>>,
-			Name: string,
-		) => {
+		const createServiceContainer = (service: Service, Name: string) => {
 			const { HostConfig, NetworkingConfig, ...Config } =
-				service.toDockerContainer({ deviceName: 'foo', containerIds: {} });
+				toDockerContainer(service);
 			return createContainer({
 				Id: 'deadbeef',
 				Name,
@@ -176,6 +183,7 @@ describe('compose/service-manager', () => {
 						: Promise.resolve(),
 				);
 
+			let error: unknown;
 			await withMockerode(
 				async (mockerode) => {
 					mockerode.info.resolves({ DefaultRuntime: 'runc' } as any);
@@ -186,23 +194,22 @@ describe('compose/service-manager', () => {
 					} as any);
 
 					// Starting the target is not under test, and fails against the mock
-					await serviceManager.handover(current, target).catch(() => {
-						/* ignore */
-					});
+					error = await serviceManager.handover(current, target).then(
+						() => undefined,
+						(e: unknown) => e,
+					);
 				},
 				{ containers: [container] },
 			);
 
-			return { current, update, rename };
+			return { current, update, rename, error };
 		};
 
-		const oldName = (s: Service) =>
-			`old_${s.serviceName}_${s.imageId}_${s.releaseId}_${s.commit}`;
+		const isSameNameError = (e: unknown) =>
+			e instanceof Error && /same name/i.test(e.message);
 
 		it('stops the old container from restarting and renames it', async () => {
-			const { current, update, rename } = await handover(
-				(s) => `${s.serviceName}_${s.imageId}_${s.releaseId}_${s.commit}`,
-			);
+			const { current, update, rename } = await handover(containerName);
 
 			expect(update).to.have.been.calledWith({ RestartPolicy: {} });
 			expect(rename).to.have.been.calledOnceWith({ name: oldName(current) });
@@ -210,11 +217,12 @@ describe('compose/service-manager', () => {
 
 		// A handover that fails after the rename is retried against a container
 		// that already carries the old_ name
-		it('does not rename a container that an earlier attempt already renamed', async () => {
-			const { update, rename } = await handover(oldName);
+		it('continues past a container that an earlier attempt already renamed', async () => {
+			const { current, update, rename, error } = await handover(oldName);
 
 			expect(update).to.have.been.calledWith({ RestartPolicy: {} });
-			expect(rename).to.not.have.been.called;
+			expect(rename).to.have.been.calledOnceWith({ name: oldName(current) });
+			expect(isSameNameError(error)).to.be.false;
 		});
 	});
 
